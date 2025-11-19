@@ -127,6 +127,46 @@ defmodule FlopTest do
       assert Flop.validate!(%{}) == %Flop{limit: 50}
     end
 
+    test "silently handles numeric keyed maps for array values" do
+      assert {:ok, %Flop{filters: [%{value: value}]}} =
+               Flop.validate(
+                 %{
+                   filters: %{
+                     "0" => %{
+                       field: :name,
+                       op: "in",
+                       value: %{
+                         "0" => "Gerald",
+                         "1" => "Francine"
+                       }
+                     }
+                   }
+                 },
+                 for: Pet
+               )
+
+      assert value == ["Gerald", "Francine"]
+    end
+
+    test "leaves mixed numeric and non numeric maps for array values" do
+      assert {:error, %Meta{}} =
+               Flop.validate(
+                 %{
+                   filters: %{
+                     "0" => %{
+                       field: :name,
+                       op: "in",
+                       value: %{
+                         "0" => "Gerald",
+                         "apple" => "Francine"
+                       }
+                     }
+                   }
+                 },
+                 for: Pet
+               )
+    end
+
     test "raises if params are invalid" do
       error =
         assert_raise Flop.InvalidParamsError, fn ->

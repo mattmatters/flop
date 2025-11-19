@@ -165,7 +165,11 @@ defmodule Flop.Filter do
 
   defp cast_value(%Changeset{params: params} = changeset, field_info, op, repo) do
     type = field_info |> value_type(op, repo) |> expand_type()
-    value = filter_empty_values(type, params["value"])
+
+    value =
+      params["value"]
+      |> maybe_convert_qs_indexed_map_to_array(type)
+      |> filter_empty_values(type)
 
     case Ecto.Type.cast(type, value) do
       {:ok, cast_value} -> put_change(changeset, :value, cast_value)
@@ -173,13 +177,57 @@ defmodule Flop.Filter do
     end
   end
 
-  defp filter_empty_values({:array, type}, value) when is_list(value) do
+  # Nested arrays in query strings are weird and often are not handled consistently
+  # for example:
+  # ?filter[0][op]=in&filter[0][field]=some_num&filter[0][value][0]=1&filter[0][value][1]=1
+  # in Plug's query parse is parsed as
+  #
+  # %{
+  #    "filter" => %{
+  #      "0" => %{
+  #        "op" => "in",
+  #        "field" => "some_num",
+  #        "value" => %{
+  #          "0" => "1"
+  #          "1" => "2"
+  #        }
+  #      }
+  #    }
+  # }
+  #
+  # Ecto will handle numeric keys for embedded schemas, but not for plain arrays.
+  #
+  # Given this project heavily encourages nested arrays in maps we try to silently convert
+  # them into a format that Ecto likes sense when possible.
+  defp maybe_convert_qs_indexed_map_to_array(%{"0" => _} = value, {:array, _}) do
+    res =
+      Enum.reduce_while(value, [], fn {key, val}, acc ->
+        case Integer.parse(key) do
+          {key, ""} -> {:cont, [{key, val} | acc]}
+          _ -> :error
+        end
+      end)
+
+    case res do
+      res when is_list(res) ->
+        res
+        |> Enum.sort_by(&elem(&1, 0))
+        |> Enum.map(&elem(&1, 1))
+
+      :error ->
+        value
+    end
+  end
+
+  defp maybe_convert_qs_indexed_map_to_array(value, _type), do: value
+
+  defp filter_empty_values(value, {:array, type}) when is_list(value) do
     for v <- value,
-        v when not is_nil(v) <- [filter_empty_values(type, v)],
+        v when not is_nil(v) <- [filter_empty_values(v, type)],
         do: v
   end
 
-  defp filter_empty_values(_type, v) do
+  defp filter_empty_values(v, _type) do
     if is_binary(v) and String.trim_leading(v) == "", do: nil, else: v
   end
 
